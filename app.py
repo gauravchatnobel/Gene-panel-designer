@@ -158,6 +158,13 @@ with tab1:
     default_3utr   = st.sidebar.checkbox("Include 3′ UTR", value=False, help="Can be toggled per gene in the table.")
     default_intron = st.sidebar.checkbox("Include Introns", value=False, help="Can be toggled per gene in the table.")
 
+    fetch_gc = st.sidebar.checkbox(
+        "Calculate GC Content",
+        value=True,
+        help="Fetch cDNA GC % from Ensembl for each transcript. Adds ~10–30 s for large panels. "
+             "Disable if you don't need it or the API is slow."
+    )
+
     st.sidebar.divider()
 
     padding = st.sidebar.number_input(
@@ -258,19 +265,21 @@ with tab1:
                                     )
                                 )
 
-            # GC content — always fetched from hg38 because MANE IDs are GRCh38-defined.
-            gc_ph = st.info("⏳ Calculating GC content…")
-            gc_map = mane_utils.fetch_transcript_gc_batch(mapped_df['Ensembl_nuc'].tolist(), build='hg38')
-            mapped_df['Mean GC %'] = mapped_df['Ensembl_nuc'].map(gc_map)
-            gc_ph.empty()
+            # GC content — optional, always fetched from hg38 (MANE IDs are GRCh38-defined).
+            if fetch_gc:
+                gc_ph = st.info("⏳ Calculating GC content…")
+                gc_map = mane_utils.fetch_transcript_gc_batch(mapped_df['Ensembl_nuc'].tolist(), build='hg38')
+                mapped_df['Mean GC %'] = mapped_df['Ensembl_nuc'].map(gc_map)
+                gc_ph.empty()
 
-            # Warn if GC content could not be retrieved for some transcripts
-            n_gc_missing = mapped_df['Mean GC %'].isna().sum()
-            if n_gc_missing == len(mapped_df):
-                st.warning("⚠️ GC content could not be fetched from Ensembl (API may be temporarily unavailable). "
-                           "GC % will show as N/A — this does not affect BED generation.")
-            elif n_gc_missing > 0:
-                st.caption(f"ℹ️ GC content unavailable for {n_gc_missing} transcript(s) — shown as N/A.")
+                n_gc_missing = mapped_df['Mean GC %'].isna().sum()
+                if n_gc_missing == len(mapped_df):
+                    st.warning("⚠️ GC content could not be fetched from Ensembl (API may be temporarily unavailable). "
+                               "GC % will show as N/A — this does not affect BED generation.")
+                elif n_gc_missing > 0:
+                    st.caption(f"ℹ️ GC content unavailable for {n_gc_missing} transcript(s) — shown as N/A.")
+            else:
+                mapped_df['Mean GC %'] = None
 
             # Config columns
             mapped_df["Include 5' UTR"]  = default_5utr
@@ -329,12 +338,14 @@ with tab1:
                 "MANE_status":    st.column_config.TextColumn("Type",        disabled=True),
                 "Ensembl_Gene":   st.column_config.TextColumn("Gene ID",     disabled=True),
                 "GRCh38_chr":     None,  # hidden
-                "Mean GC %":      st.column_config.NumberColumn(
-                                      "GC %",
-                                      format="%.1f",
-                                      min_value=0, max_value=100,
-                                      help="Mean GC content of the cDNA sequence (informational). N/A = could not fetch from Ensembl.",
-                                      disabled=True
+                "Mean GC %":      (
+                                      st.column_config.NumberColumn(
+                                          "GC %",
+                                          format="%.1f",
+                                          min_value=0, max_value=100,
+                                          help="Mean GC content of the cDNA sequence (informational). N/A = could not fetch from Ensembl.",
+                                          disabled=True,
+                                      ) if fetch_gc else None   # hide column when GC fetch is disabled
                                   ),
                 "Include 5' UTR": st.column_config.CheckboxColumn("5′ UTR",   help="Include 5′ UTR regions"),
                 "Include 3' UTR": st.column_config.CheckboxColumn("3′ UTR",   help="Include 3′ UTR regions"),
