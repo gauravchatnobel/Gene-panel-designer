@@ -305,16 +305,29 @@ def fetch_ensembl_exons(transcript_id_version, build='hg38', gene_symbol=None):
     fetched_data = None
     
     # Retry logic for INITIAL ID
-    for attempt in range(2):
+    for attempt in range(5):
         try:
             r = requests.get(server+ext, headers={"Content-Type": "application/json"}, timeout=API_TIMEOUT)
             if r.ok:
                 fetched_data = r.json()
                 break
             elif r.status_code == 429:
+                # Rate limit: longer backoff
+                time.sleep(2 + attempt * 2) 
+            elif r.status_code >= 500:
+                # Server error: short backoff
+                time.sleep(1 + attempt)
+            else:
+                # 404 or other client error: likely won't succeed on retry unless transient
+                # break? No, sometimes 404 is transient during updates? Unlikely.
+                # But ACTB on hg19 via lookup/id using hg38 ID fails with 400/404 immediately.
+                # We should stop retrying 400/404.
+                if r.status_code in [400, 404]:
+                     break
                 time.sleep(1)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Request failed: {e}")
+            time.sleep(1 + attempt)
             
     # FALLBACK: If failed and we have gene symbol, try to find the GENE on this build
     if not fetched_data and gene_symbol:
