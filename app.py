@@ -464,15 +464,11 @@ with tab1:
             st.sidebar.markdown(f"**Active build:** `{genome_build}`")
 
             # Quick connectivity check — warn early if Ensembl is unreachable
-            import requests as _req
+            import urllib.request as _ureq
             _api_server = "https://rest.ensembl.org" if genome_build == "hg38" else "https://grch37.rest.ensembl.org"
             try:
-                _ping = _req.get(f"{_api_server}/info/ping?content-type=application/json", timeout=8)
-                if not _ping.ok:
-                    st.warning(
-                        f"⚠️ Ensembl REST API returned HTTP {_ping.status_code}. "
-                        "Transcript lookups may fail. Try again in a few minutes."
-                    )
+                with _ureq.urlopen(f"{_api_server}/info/ping?content-type=application/json", timeout=8) as _r:
+                    pass  # just checking we can connect
             except Exception:
                 st.warning(
                     "⚠️ Could not reach the Ensembl REST API. Check your internet connection, "
