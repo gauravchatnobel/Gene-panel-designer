@@ -173,10 +173,27 @@ with tab1:
 
     genome_build = st.sidebar.radio(
         "Genome Build",
-        ["hg19", "hg38"],
-        index=1,
-        help="Reference genome for BED coordinate output."
+        ["hg38", "hg19", "T2T-CHM13v2"],
+        index=0,
+        help=(
+            "Reference genome for BED coordinate output.\n\n"
+            "**hg38** — GRCh38 (recommended, all MANE transcripts available).\n\n"
+            "**hg19** — GRCh37 legacy build; transcripts fetched from Ensembl GRCh37 server.\n\n"
+            "**T2T-CHM13v2** — Telomere-to-Telomere complete assembly. "
+            "Coordinates are fetched as hg38 then lifted over via the UCSC hg38→hs1 chain file. "
+            "A small fraction of regions in highly repetitive or novel T2T-only sequences may not map."
+        )
     )
+
+    if genome_build == 'T2T-CHM13v2':
+        st.sidebar.markdown(
+            "<div style='background:#0d2b22;border-left:3px solid #00c9a7;border-radius:4px;"
+            "padding:8px 10px;font-size:0.76rem;color:#8fa3b8;margin-bottom:4px;'>"
+            "🧬 <b style='color:#00c9a7;'>T2T mode:</b> transcripts fetched as hg38, "
+            "then lifted over to CHM13v2 via UCSC chain file."
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
     st.sidebar.divider()
 
@@ -302,7 +319,9 @@ with tab1:
 
             if missing_genes:
                 status_ph = st.info(f"⏳ Fetching Ensembl Canonical for {len(missing_genes)} non-MANE gene(s)…")
-                fallback_df = mane_utils.get_ensembl_canonical(missing_genes, build=genome_build)
+                # Ensembl only supports hg38/hg19; T2T coordinates are derived via liftover later.
+                _ensembl_build = 'hg38' if genome_build == 'T2T-CHM13v2' else genome_build
+                fallback_df = mane_utils.get_ensembl_canonical(missing_genes, build=_ensembl_build)
                 if not fallback_df.empty:
                     mapped_df = pd.concat([mapped_df, fallback_df], ignore_index=True)
                     status_ph.empty()
@@ -374,9 +393,12 @@ with tab1:
                     )
                 )
         else:
-            msg = ("✅ All genes mapped to MANE Select transcripts."
-                   if genome_build == 'hg38'
-                   else "✅ All genes mapped to MANE Select. (hg19 runtime switches may occur during BED generation.)")
+            if genome_build == 'T2T-CHM13v2':
+                msg = "✅ All genes mapped to MANE Select. Coordinates will be lifted over to T2T-CHM13v2 during BED generation."
+            elif genome_build == 'hg38':
+                msg = "✅ All genes mapped to MANE Select transcripts."
+            else:
+                msg = "✅ All genes mapped to MANE Select. (hg19 runtime switches may occur during BED generation.)"
             st.success(msg)
 
         st.divider()
@@ -464,8 +486,9 @@ with tab1:
             st.sidebar.markdown(f"**Active build:** `{genome_build}`")
 
             # Quick connectivity check — warn early if Ensembl is unreachable
+            # T2T coordinates are fetched as hg38 then lifted over, so always ping hg38 server.
             import urllib.request as _ureq
-            _api_server = "https://rest.ensembl.org" if genome_build == "hg38" else "https://grch37.rest.ensembl.org"
+            _api_server = "https://grch37.rest.ensembl.org" if genome_build == "hg19" else "https://rest.ensembl.org"
             try:
                 with _ureq.urlopen(f"{_api_server}/info/ping?content-type=application/json", timeout=8) as _r:
                     pass  # just checking we can connect
@@ -474,6 +497,14 @@ with tab1:
                     "⚠️ Could not reach the Ensembl REST API. Check your internet connection, "
                     "or try again in a few minutes."
                 )
+
+            # T2T-specific: check chain file is present
+            if genome_build == "T2T-CHM13v2" and not liftover_utils.t2t_chain_available():
+                st.error(
+                    "❌ hg38→T2T chain file not found (`hg38ToHs1.over.chain.gz`). "
+                    "Please ensure this file is present in the app directory."
+                )
+                st.stop()
 
             progress_bar = st.progress(0)
             status_ph    = st.empty()
@@ -484,6 +515,7 @@ with tab1:
             fallback_genes = []
             refseq_issues  = []
             exon_filter_errors = []   # {gene, requested, available}
+            t2t_unmapped   = []       # regions that couldn't be lifted over to T2T
 
             for i, (index, row) in enumerate(edited_df.iterrows()):
                 progress_bar.progress((i + 1) / total)
@@ -518,7 +550,9 @@ with tab1:
 
                 status_ph.caption(f"⏳ Fetching {gene}  ({enst_req})…")
 
-                transcript_info = mane_utils.fetch_ensembl_exons(enst_req, build=genome_build, gene_symbol=gene)
+                # T2T: Ensembl has no T2T server — always fetch as hg38, liftover afterwards.
+                _fetch_build = 'hg38' if genome_build == 'T2T-CHM13v2' else genome_build
+                transcript_info = mane_utils.fetch_ensembl_exons(enst_req, build=_fetch_build, gene_symbol=gene)
 
                 if transcript_info:
                     fetched_id = transcript_info['transcript_id']
@@ -529,14 +563,14 @@ with tab1:
                         fallback_genes.append({
                             'Gene': gene,
                             'Requested (MANE)': enst_req,
-                            'Used (hg19 canonical)': fetched_id,
+                            'Used (canonical fallback)': fetched_id,
                         })
 
                     # Determine output ID label
                     output_label = fetched_id
                     if "RefSeq" in id_format:
                         if is_switched:
-                            refseq_issues.append({'Gene': gene, 'Reason': 'Transcript switched (hg19)'})
+                            refseq_issues.append({'Gene': gene, 'Reason': f'Transcript switched ({_fetch_build} canonical)'})
                         elif pd.isna(nm_req) or not str(nm_req).startswith("NM"):
                             refseq_issues.append({'Gene': gene, 'Reason': 'No RefSeq ID available'})
                         else:
@@ -596,6 +630,16 @@ with tab1:
                         p_start = max(0, start - padding)
                         p_end   = end + padding
 
+                        # T2T: liftover from hg38 to hs1 coordinates
+                        if genome_build == 'T2T-CHM13v2':
+                            lifted = liftover_utils.liftover_single_region(
+                                chrom, p_start, p_end, 'hg38', 't2t'
+                            )
+                            if lifted is None:
+                                t2t_unmapped.append(f"{gene} {type_} ({chrom}:{p_start}-{p_end})")
+                                continue
+                            chrom, p_start, p_end = lifted
+
                         # Column 8: exon/intron number (. for non-numbered regions)
                         m = re.search(r'(?:exon|intron)(\d+)', type_)
                         exon_num = m.group(1) if m else "."
@@ -616,6 +660,17 @@ with tab1:
 
             # ── Generation Report ──────────────────────────────────────────────
             st.markdown("### 📋 Generation Report")
+
+            # T2T unmapped warning (shown above the 3-col block if any)
+            if genome_build == 'T2T-CHM13v2' and t2t_unmapped:
+                with st.expander(f"⚠️ {len(t2t_unmapped)} region(s) could not be lifted over to T2T", expanded=True):
+                    st.caption(
+                        "These regions exist in hg38 but did not map to T2T-CHM13v2 via the UCSC chain file. "
+                        "This typically affects highly repetitive or unresolved regions in GRCh38 "
+                        "that are now fully resolved in T2T (coordinates shifted substantially)."
+                    )
+                    for r in t2t_unmapped:
+                        st.markdown(f"- `{r}`")
 
             rep1, rep2, rep3 = st.columns(3)
             with rep1:
