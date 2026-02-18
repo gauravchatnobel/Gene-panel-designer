@@ -368,13 +368,16 @@ def fetch_ensembl_exons(transcript_id_version, build='hg38', gene_symbol=None):
         'strand': data['strand']
     }
 
-def generate_bed_records(transcript_info, include_5utr=False, include_3utr=False, include_intron=False, flank_5_prime=0, flank_3_prime=0, exon_filter=None):
+def generate_bed_records(transcript_info, include_5utr=False, include_3utr=False, include_intron=False, flank_5_prime=0, flank_3_prime=0, exon_filter=None, intron_filter=None):
     """
     Generate BED lines from transcript info.
     transcript_info: output from fetch_ensembl_exons
-    exon_filter: set of ints (1-based transcript-order exon numbers) to include.
-                 None or empty = include all exons.
-                 Flanks and introns between selected exons are always emitted regardless.
+    exon_filter:   set of ints (1-based transcript-order exon numbers) to include.
+                   None = include all exons.
+    intron_filter: set of ints (1-based transcript-order intron numbers) to include.
+                   None = include all introns (subject to include_intron flag).
+                   Intron N lies between exon N and exon N+1.
+    Flanks are always emitted regardless of filters (gene-level regions).
     """
     records = []
     chrom = transcript_info['chr']
@@ -535,7 +538,11 @@ def generate_bed_records(transcript_info, include_5utr=False, include_3utr=False
                 left_exon_num  = total_exons - i
                 right_exon_num = total_exons - i - 1
 
-            # Only emit this intron if both flanking exons are selected (or no filter active)
+            # Intron filter: skip if a specific intron filter is active and this intron isn't in it.
+            # Also skip if an exon filter is active and either flanking exon is excluded
+            # (avoids dangling introns between non-adjacent selected exons).
+            if intron_filter and intron_num not in intron_filter:
+                continue
             if exon_filter and not (left_exon_num in exon_filter and right_exon_num in exon_filter):
                 continue
 

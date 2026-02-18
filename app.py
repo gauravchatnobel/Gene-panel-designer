@@ -320,10 +320,11 @@ with tab1:
             # Config columns
             mapped_df["Include 5' UTR"]  = default_5utr
             mapped_df["Include 3' UTR"]  = default_3utr
+            mapped_df["Exon Filter"]     = "all"   # "all" or comma/range list e.g. "1,3,5-7"
             mapped_df["Include Intron"]  = default_intron
+            mapped_df["Intron Filter"]   = "all"   # "all" or comma/range list e.g. "1,3,5-7"
             mapped_df["5' Flank"]        = 0
             mapped_df["3' Flank"]        = 0
-            mapped_df["Exon Filter"]     = "all"   # "all" or comma/range list e.g. "1,3,5-7"
 
             st.session_state['mapped_data']   = mapped_df
             st.session_state['last_file_hash'] = file_hash
@@ -364,8 +365,8 @@ with tab1:
 
         # ── Per-gene settings table ────────────────────────────────────────────
         st.markdown("### ⚙️ Customise Per-Gene Settings")
-        st.caption("Edit UTR/intron toggles, promoter/downstream flanks, and exon filters per gene. "
-                   "Exon Filter: leave blank for all exons, or enter e.g. '2,3' or '19-21'. All other columns are read-only.")
+        st.caption("Edit UTR/intron toggles, exon/intron filters, and flanks per gene. "
+                   "Filters accept blank/'all', numbers ('2,3'), or ranges ('19-21'). All other columns are read-only.")
 
         edited_df = st.data_editor(
             mapped_df,
@@ -387,7 +388,25 @@ with tab1:
                                   ),
                 "Include 5' UTR": st.column_config.CheckboxColumn("5′ UTR",   help="Include 5′ UTR regions"),
                 "Include 3' UTR": st.column_config.CheckboxColumn("3′ UTR",   help="Include 3′ UTR regions"),
-                "Include Intron": st.column_config.CheckboxColumn("Introns",  help="Include intronic regions"),
+                "Exon Filter":    st.column_config.TextColumn(
+                                      "Exon Filter",
+                                      help=(
+                                          "Which exons to include. Leave blank or type 'all' for every exon. "
+                                          "Otherwise enter exon numbers (transcript order, 1-based): "
+                                          "e.g. '2,3' or '19-21' or '1,5-7,10'."
+                                      ),
+                                  ),
+                "Include Intron": st.column_config.CheckboxColumn("Introns",  help="Enable intronic regions for this gene. Use Intron Filter to select specific introns."),
+                "Intron Filter":  st.column_config.TextColumn(
+                                      "Intron Filter",
+                                      help=(
+                                          "Which introns to include (only used when Introns is ticked). "
+                                          "Leave blank or type 'all' for every intron. "
+                                          "Otherwise enter intron numbers (transcript order, 1-based): "
+                                          "e.g. '1,2' or '4-6' or '1,3,5-7'. "
+                                          "Intron N lies between exon N and exon N+1."
+                                      ),
+                                  ),
                 "5' Flank":       st.column_config.NumberColumn(
                                       "5′ Flank (bp)",
                                       help="Upstream promoter padding added upstream of TSS (e.g. 2000 for MYC).",
@@ -397,14 +416,6 @@ with tab1:
                                       "3′ Flank (bp)",
                                       help="Downstream padding added past the transcript end.",
                                       min_value=0
-                                  ),
-                "Exon Filter":    st.column_config.TextColumn(
-                                      "Exon Filter",
-                                      help=(
-                                          "Which exons to include. Leave blank or type 'all' for every exon. "
-                                          "Otherwise enter exon numbers (transcript order, 1-based): "
-                                          "e.g. '2,3' or '19-21' or '1,5-7,10'."
-                                      ),
                                   ),
             },
             disabled=["symbol", "Ensembl_nuc", "RefSeq_nuc", "MANE_status", "Ensembl_Gene", "Mean GC %"],
@@ -448,13 +459,21 @@ with tab1:
                 use_intron    = row.get('Include Intron', False)
                 flank_5prime  = int(row.get("5' Flank", 0) or 0)
                 flank_3prime  = int(row.get("3' Flank", 0) or 0)
-                exon_filter_raw = str(row.get("Exon Filter", "all") or "all").strip()
+                exon_filter_raw   = str(row.get("Exon Filter",   "all") or "all").strip()
+                intron_filter_raw = str(row.get("Intron Filter", "all") or "all").strip()
 
                 # Parse exon filter — report syntax errors immediately and skip gene
                 try:
                     exon_filter_set = parse_exon_filter(exon_filter_raw)
                 except ValueError as e:
                     st.error(f"❌ **{gene}** — invalid Exon Filter '{exon_filter_raw}': {e}")
+                    continue
+
+                # Parse intron filter — same logic
+                try:
+                    intron_filter_set = parse_exon_filter(intron_filter_raw)  # reuse same parser
+                except ValueError as e:
+                    st.error(f"❌ **{gene}** — invalid Intron Filter '{intron_filter_raw}': {e}")
                     continue
 
                 status_ph.caption(f"⏳ Fetching {gene}  ({enst_req})…")
@@ -498,12 +517,29 @@ with tab1:
                                 'Invalid exon(s)': ', '.join(str(e) for e in invalid_exons),
                                 'Transcript exons': n_exons,
                             })
-                            # Remove invalid numbers and continue with valid ones only
                             exon_filter_set = exon_filter_set - set(invalid_exons)
                             if not exon_filter_set:
                                 st.error(f"❌ **{gene}** — all requested exons are out of range "
                                          f"(transcript has {n_exons} exon(s)). Gene skipped.")
                                 continue
+
+                    # Validate intron filter — a transcript with N exons has N-1 introns
+                    n_introns = max(n_exons - 1, 0)
+                    if intron_filter_set:
+                        invalid_introns = sorted(n for n in intron_filter_set if n < 1 or n > n_introns)
+                        if invalid_introns:
+                            exon_filter_errors.append({
+                                'Gene': gene,
+                                'Requested': intron_filter_raw,
+                                'Invalid exon(s)': ', '.join(str(n) for n in invalid_introns),
+                                'Transcript exons': f"{n_introns} introns",
+                            })
+                            intron_filter_set = intron_filter_set - set(invalid_introns)
+                            if not intron_filter_set and use_intron:
+                                st.error(f"❌ **{gene}** — all requested introns are out of range "
+                                         f"(transcript has {n_introns} intron(s)). Introns skipped for this gene.")
+                                intron_filter_set = None  # fall back to no introns
+                                use_intron = False
 
                     records = mane_utils.generate_bed_records(
                         transcript_info,
@@ -513,6 +549,7 @@ with tab1:
                         flank_5_prime=flank_5prime,
                         flank_3_prime=flank_3prime,
                         exon_filter=exon_filter_set,
+                        intron_filter=intron_filter_set,
                     )
 
                     for chrom, start, end, type_ in records:
