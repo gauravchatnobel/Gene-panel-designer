@@ -258,11 +258,19 @@ with tab1:
                                     )
                                 )
 
-            # GC content (always hg38 — MANE IDs are GRCh38-defined; hg19 fallback may return None)
+            # GC content — always fetched from hg38 because MANE IDs are GRCh38-defined.
             gc_ph = st.info("⏳ Calculating GC content…")
             gc_map = mane_utils.fetch_transcript_gc_batch(mapped_df['Ensembl_nuc'].tolist(), build='hg38')
             mapped_df['Mean GC %'] = mapped_df['Ensembl_nuc'].map(gc_map)
             gc_ph.empty()
+
+            # Warn if GC content could not be retrieved for some transcripts
+            n_gc_missing = mapped_df['Mean GC %'].isna().sum()
+            if n_gc_missing == len(mapped_df):
+                st.warning("⚠️ GC content could not be fetched from Ensembl (API may be temporarily unavailable). "
+                           "GC % will show as N/A — this does not affect BED generation.")
+            elif n_gc_missing > 0:
+                st.caption(f"ℹ️ GC content unavailable for {n_gc_missing} transcript(s) — shown as N/A.")
 
             # Config columns
             mapped_df["Include 5' UTR"]  = default_5utr
@@ -323,9 +331,9 @@ with tab1:
                 "GRCh38_chr":     None,  # hidden
                 "Mean GC %":      st.column_config.NumberColumn(
                                       "GC %",
-                                      format="%.1f%%",
+                                      format="%.1f",
                                       min_value=0, max_value=100,
-                                      help="Mean GC content of the cDNA sequence (informational).",
+                                      help="Mean GC content of the cDNA sequence (informational). N/A = could not fetch from Ensembl.",
                                       disabled=True
                                   ),
                 "Include 5' UTR": st.column_config.CheckboxColumn("5′ UTR",   help="Include 5′ UTR regions"),

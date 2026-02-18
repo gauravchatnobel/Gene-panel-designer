@@ -34,30 +34,38 @@ def fetch_transcript_gc_batch(transcript_ids, build='hg38'):
         # CAUTION: If multiple original IDs map to same clean ID (rare in this context), we must handle it.
         # But here we just assume 1-to-1 or standard usage.
         
+        # Ensembl /sequence/id POST: ids + type must be top-level keys.
+        # The endpoint returns a JSON list: [{id, seq, ...}, ...]
         payload = {
-            "ids" : chunk_clean,
-            "type": "cdna" 
+            "ids": chunk_clean,
+            "type": "cdna",
         }
-        
+
         try:
-            r = requests.post(server+ext, headers=headers, json=payload, timeout=API_TIMEOUT)
+            r = requests.post(server + ext, headers=headers, json=payload, timeout=API_TIMEOUT)
             if not r.ok:
-                print(f"Batch GC fetch failed for chunk {i}: {r.status_code}")
-                # Fallback: mark these as None
+                print(f"Batch GC fetch failed (HTTP {r.status_code}) for chunk starting at index {i}: {r.text[:200]}")
                 for tid in chunk:
                     results[tid] = None
                 continue
-                
+
             data = r.json()
-            # Ensembl returns list of {id: clean_id, seq: ...}
-            # We need to map these results back to the *ORIGINAL* requested ID (with version)
-            # Create a lookup from clean_id -> seq
-            seq_map = {item['id']: item.get('seq') for item in data}
-            
+
+            # Ensembl returns a list of objects: [{id: <unversioned_id>, seq: <sequence>}, ...]
+            # Guard: if the response is not a list (e.g. an error dict), skip gracefully.
+            if not isinstance(data, list):
+                print(f"Unexpected GC response format: {str(data)[:200]}")
+                for tid in chunk:
+                    results[tid] = None
+                continue
+
+            # Build lookup: unversioned_id -> sequence
+            seq_map = {item['id']: item.get('seq') for item in data if 'id' in item}
+
             for original_id, clean_id in zip(chunk, chunk_clean):
                 seq = seq_map.get(clean_id)
                 results[original_id] = calculate_gc(seq) if seq else None
-                    
+
         except Exception as e:
             print(f"Error in batch GC fetch: {e}")
             for tid in chunk:
