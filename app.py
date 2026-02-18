@@ -212,6 +212,18 @@ with tab1:
         help="Bases added to each side of every region. 20 bp is standard for clinical panels."
     )
 
+    st.sidebar.divider()
+
+    if st.sidebar.button(
+        "🔄 Reset & Re-fetch",
+        help="Clears the cached mapping and re-fetches transcripts from Ensembl. "
+             "Use this if transcript data looks stale or if you changed the genome build.",
+        use_container_width=True,
+    ):
+        for key in ['mapped_data', 'last_file_hash']:
+            st.session_state.pop(key, None)
+        st.rerun()
+
     # ── Step banner ───────────────────────────────────────────────────────────
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -429,6 +441,13 @@ with tab1:
             use_container_width=True,
         )
 
+        # Ensure filter columns are always present with safe defaults (defensive guard)
+        for _col, _default in [("Exon Filter", "all"), ("Intron Filter", "all"),
+                                ("Include 5' UTR", False), ("Include 3' UTR", False),
+                                ("Include Intron", False), ("5' Flank", 0), ("3' Flank", 0)]:
+            if _col not in edited_df.columns:
+                edited_df[_col] = _default
+
         # Warn about genes that could not be mapped at all
         still_missing = set(g.upper() for g in genes) - set(edited_df['symbol'].str.upper())
         if still_missing:
@@ -443,6 +462,23 @@ with tab1:
 
         if generate:
             st.sidebar.markdown(f"**Active build:** `{genome_build}`")
+
+            # Quick connectivity check — warn early if Ensembl is unreachable
+            import requests as _req
+            _api_server = "https://rest.ensembl.org" if genome_build == "hg38" else "https://grch37.rest.ensembl.org"
+            try:
+                _ping = _req.get(f"{_api_server}/info/ping?content-type=application/json", timeout=8)
+                if not _ping.ok:
+                    st.warning(
+                        f"⚠️ Ensembl REST API returned HTTP {_ping.status_code}. "
+                        "Transcript lookups may fail. Try again in a few minutes."
+                    )
+            except Exception:
+                st.warning(
+                    "⚠️ Could not reach the Ensembl REST API. Check your internet connection, "
+                    "or try again in a few minutes."
+                )
+
             progress_bar = st.progress(0)
             status_ph    = st.empty()
 
@@ -573,7 +609,11 @@ with tab1:
                             f"{chrom}\t{p_start}\t{p_end}\t{full_name}\t.\t{transcript_info['strand']}\t{gene}\t{exon_num}"
                         )
                 else:
-                    st.error(f"❌ Failed to fetch transcript for **{gene}**")
+                    st.error(
+                        f"❌ Failed to fetch transcript for **{gene}** ({enst_req}). "
+                        "Ensembl API may be temporarily unavailable or the transcript ID is not recognised on this build. "
+                        "Try switching genome build or click **Reset & Re-fetch** in the sidebar."
+                    )
 
             progress_bar.empty()
             status_ph.empty()
