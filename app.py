@@ -20,7 +20,9 @@ def parse_exon_filter(value):
         "1,3,5" -> {1, 3, 5}
         "1-3,7" -> {1, 2, 3, 7}
     """
-    if not value or str(value).strip().lower() in ("all", ""):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if str(value).strip().lower() in ("all", "", "nan"):
         return None
     result = set()
     for part in str(value).replace(" ", "").split(","):
@@ -272,8 +274,12 @@ with tab1:
         st.success(f"✅ {len(genes)} gene symbols loaded.")
 
         # ── Map to MANE (cached by file content hash) ─────────────────────────
+        # SCHEMA_VERSION must be bumped whenever new columns are added to mapped_df,
+        # so stale session state from previous app versions is automatically invalidated.
+        SCHEMA_VERSION = 3
         file_hash = hash(uploaded_file.getvalue())
-        if 'mapped_data' not in st.session_state or st.session_state.get('last_file_hash') != file_hash:
+        cache_key = (file_hash, SCHEMA_VERSION)
+        if 'mapped_data' not in st.session_state or st.session_state.get('last_file_hash') != cache_key:
 
             mapped_df = mane_utils.get_mane_transcripts(genes, mane_df)
 
@@ -327,7 +333,7 @@ with tab1:
             mapped_df["3' Flank"]        = 0
 
             st.session_state['mapped_data']   = mapped_df
-            st.session_state['last_file_hash'] = file_hash
+            st.session_state['last_file_hash'] = cache_key
 
         mapped_df = st.session_state['mapped_data']
 
@@ -459,8 +465,10 @@ with tab1:
                 use_intron    = row.get('Include Intron', False)
                 flank_5prime  = int(row.get("5' Flank", 0) or 0)
                 flank_3prime  = int(row.get("3' Flank", 0) or 0)
-                exon_filter_raw   = str(row.get("Exon Filter",   "all") or "all").strip()
-                intron_filter_raw = str(row.get("Intron Filter", "all") or "all").strip()
+                _ef_raw = row.get("Exon Filter", "all")
+                exon_filter_raw   = "all" if pd.isna(_ef_raw) else str(_ef_raw).strip()
+                _if_raw = row.get("Intron Filter", "all")
+                intron_filter_raw = "all" if pd.isna(_if_raw) else str(_if_raw).strip()
 
                 # Parse exon filter — report syntax errors immediately and skip gene
                 try:
