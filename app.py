@@ -83,7 +83,10 @@ with tab1:
         st.success(f"Loaded {len(genes)} genes. Processing...")
         
         # 1. Map to MANE
-        if 'mapped_data' not in st.session_state or st.session_state.get('last_uploaded') != uploaded_file.name:
+        # Use a content hash (not just filename) so re-uploading a same-named but different file
+        # correctly triggers reprocessing.
+        file_hash = hash(uploaded_file.getvalue())
+        if 'mapped_data' not in st.session_state or st.session_state.get('last_file_hash') != file_hash:
              mapped_df = mane_utils.get_mane_transcripts(genes, mane_df)
              
              # Fallback for missing genes
@@ -109,7 +112,9 @@ with tab1:
              # Fetch GC Content (Batch)
              status_text = st.warning(f"Calculating GC Content for {len(mapped_df)} transcripts...")
              transcript_ids = mapped_df['Ensembl_nuc'].tolist()
-             # Always use hg38 for GC content because MANE Select IDs are hg38-based
+             # GC content always fetched from hg38 because MANE Select transcript IDs (ENST) are
+             # defined on GRCh38. Ensembl Canonical fallback IDs may silently return None GC for
+             # hg19-only transcripts — this is acceptable since GC is for informational display only.
              gc_map = mane_utils.fetch_transcript_gc_batch(transcript_ids, build='hg38')
              
              mapped_df['Mean GC %'] = mapped_df['Ensembl_nuc'].map(gc_map)
@@ -126,7 +131,7 @@ with tab1:
              mapped_df['3\' Flank'] = 0
              
              st.session_state['mapped_data'] = mapped_df
-             st.session_state['last_uploaded'] = uploaded_file.name
+             st.session_state['last_file_hash'] = file_hash
         
         # Report on Transcript Selection (User Request)
         non_mane_select = st.session_state['mapped_data'][
@@ -241,8 +246,8 @@ with tab1:
                         else:
                              output_label = nm_requested
 
-                    # Check for CDS presence
-                    if not transcript_info.get('cds_start'):
+                    # Check for CDS presence (use `is None` to avoid false positive when cds_start == 0)
+                    if transcript_info.get('cds_start') is None:
                         no_cds_genes.append(gene)
                         
                     records = mane_utils.generate_bed_records(
@@ -301,14 +306,16 @@ with tab1:
             else:
                 st.success(f"✅ Coding Sequence (CDS) data found for all transcripts.")
                     
-            status_text.success("Generation Complete!")
-            
-            st.download_button(
-                "Download BED",
-                "\n".join(bed_lines),
-                file_name=f"panel_{genome_build}.bed",
-                mime="text/plain"
-            )
+            if not bed_lines:
+                status_text.error("No BED records were generated. All gene lookups may have failed.")
+            else:
+                status_text.success(f"Generation Complete! {len(bed_lines)} records generated.")
+                st.download_button(
+                    "Download BED",
+                    "\n".join(bed_lines),
+                    file_name=f"panel_{genome_build}.bed",
+                    mime="text/plain"
+                )
 
 with tab2:
     st.header("LiftOver Assistant (hg19 -> hg38)")

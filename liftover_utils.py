@@ -1,7 +1,4 @@
 from pyliftover import LiftOver
-import os
-import pandas as pd
-import io
 
 def convert_bed_hg19_to_hg38(bed_content):
     """
@@ -73,11 +70,15 @@ def convert_bed_hg19_to_hg38(bed_content):
         new_chrom = new_start_list[0][0]
         new_start = new_start_list[0][1]
         new_end = new_end_list[0][1]
-        
-        # Check integrity (same chromosome, minimal inversion check though liftover handles this)
+
+        # Check integrity: both endpoints must land on the same chromosome.
         if new_chrom != new_end_list[0][0]:
-             unmapped_lines.append(line + "\t# Split Mapping")
-             continue
+            unmapped_lines.append(line + "\t# Split Mapping")
+            continue
+
+        # Reverse-strand intervals can arrive inverted after liftover; ensure start <= end.
+        if new_start > new_end:
+            new_start, new_end = new_end, new_start
              
         # Reconstruct line
         # Standardize chrom name if needed (e.g. if source didn't have chr)

@@ -2,7 +2,8 @@ import pandas as pd
 import requests
 import time
 import os
-import json
+
+API_TIMEOUT = 15  # seconds — prevents indefinite hangs on stalled Ensembl connections
 
 def calculate_gc(seq):
     if not seq: return 0.0
@@ -39,7 +40,7 @@ def fetch_transcript_gc_batch(transcript_ids, build='hg38'):
         }
         
         try:
-            r = requests.post(server+ext, headers=headers, data=json.dumps(payload))
+            r = requests.post(server+ext, headers=headers, json=payload, timeout=API_TIMEOUT)
             if not r.ok:
                 print(f"Batch GC fetch failed for chunk {i}: {r.status_code}")
                 # Fallback: mark these as None
@@ -112,7 +113,7 @@ def get_ensembl_canonical(gene_list, build='hg38'):
 
     server = "https://rest.ensembl.org" if build == 'hg38' else "https://grch37.rest.ensembl.org"
     ext = "/lookup/symbol/homo_sapiens"
-    headers = { "Content-Type" : "application/json", "Accept" : "application/json"}
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
     
     # Special manual mappings for loci or ambiguous symbols
     MANUAL_ALIASES = {
@@ -129,20 +130,20 @@ def get_ensembl_canonical(gene_list, build='hg38'):
             # 1. Look for cross-references (often finds old symbols)
             xref_ext = f"/xrefs/symbol/homo_sapiens/{symbol}?object_type=gene"
             # print(f"DEBUG: resolving alias for {symbol} at {server+xref_ext}")
-            r = requests.get(server + xref_ext, headers=headers)
+            r = requests.get(server + xref_ext, headers=headers, timeout=API_TIMEOUT)
             if not r.ok:
                 print(f"Alias lookup failed for {symbol}: {r.status_code}")
                 return None
             if not r.json():
                 print(f"Alias lookup empty for {symbol}")
                 return None
-            
+
             # Use the first gene match
             gene_id = r.json()[0]['id']
-            
+
             # 2. Lookup full details by ID (gives us the new Symbol and Transcripts)
             lookup_ext = f"/lookup/id/{gene_id}?expand=1"
-            r2 = requests.get(server + lookup_ext, headers=headers)
+            r2 = requests.get(server + lookup_ext, headers=headers, timeout=API_TIMEOUT)
             if r2.ok:
                 return r2.json()
         except Exception as e:
@@ -157,7 +158,7 @@ def get_ensembl_canonical(gene_list, build='hg38'):
     for batch in chunks(list(gene_list), 200):
         try:
             # POST request
-            r = requests.post(server+ext, headers=headers, data=json.dumps({ "symbols" : batch, "expand" : 1 }))
+            r = requests.post(server+ext, headers=headers, json={"symbols": batch, "expand": 1}, timeout=API_TIMEOUT)
             
             if not r.ok:
                 print(f"Bulk lookup failed: {r.status_code}")
@@ -173,7 +174,7 @@ def get_ensembl_canonical(gene_list, build='hg38'):
                     if gene in MANUAL_ALIASES:
                         # Direct lookup of manual override
                         target_alias = MANUAL_ALIASES[gene]
-                        r_lookup = requests.get(server+f"/lookup/symbol/homo_sapiens/{target_alias}?expand=1", headers=headers)
+                        r_lookup = requests.get(server+f"/lookup/symbol/homo_sapiens/{target_alias}?expand=1", headers=headers, timeout=API_TIMEOUT)
                         if r_lookup.ok:
                             info = r_lookup.json()
                             
@@ -238,9 +239,9 @@ def find_canonical_on_build(gene_symbol, build='hg38'):
             gene_symbol = HG19_ALIASES[gene_symbol]
         
     ext = f"/lookup/symbol/homo_sapiens/{gene_symbol}?expand=1;content-type=application/json"
-    
+
     try:
-        r = requests.get(server+ext, headers={"Content-Type": "application/json"})
+        r = requests.get(server+ext, headers={"Content-Type": "application/json"}, timeout=API_TIMEOUT)
         if not r.ok:
             return None
         data = r.json()
@@ -298,7 +299,7 @@ def fetch_ensembl_exons(transcript_id_version, build='hg38', gene_symbol=None):
     # Retry logic for INITIAL ID
     for attempt in range(2):
         try:
-            r = requests.get(server+ext, headers={"Content-Type": "application/json"})
+            r = requests.get(server+ext, headers={"Content-Type": "application/json"}, timeout=API_TIMEOUT)
             if r.ok:
                 fetched_data = r.json()
                 break
@@ -380,41 +381,39 @@ def generate_bed_records(transcript_info, include_5utr=False, include_3utr=False
     min_start = exons[0]['start']
     max_end = exons[-1]['end']
     
-    # 5' Flank (Promoter)
+    # Flanks use 1-based Ensembl coordinates internally and convert to BED (0-based start, exclusive end)
+    # via (1base_start - 1, 1base_end).
+
+    # 5' Flank (Promoter — upstream of TSS)
     if flank_5_prime > 0:
         if strand == 1:
-            # Positive Strand: TSS is min_start. Flank is upstream (coordinates < min_start)
-            # Region: [min_start - flank, min_start - 1] 
-            # (Note: BED is 0-based exclusive for end, but here we construct raw start/end for later padding?)
-            # Wait, our loop handles padding individually. We should append flank as a distinct record.
-            # Record format: (start, end, type)
-            # 0-based conversion usually happens in the final step (start-1)
-            # So here we use 1-based Ensembl coordinates
-            # BED is 0-based start, 1-based end.
+            # (+) strand: TSS is min_start. Upstream = lower coordinates.
+            # 1-based region: [min_start - flank, min_start - 1]
             f5_start_1base = max(1, min_start - flank_5_prime)
             f5_end_1base = min_start - 1
-            if f5_end_1base >= f5_start_1base:
-                 records.append((chrom, f5_start_1base - 1, f5_end_1base, "promoter_5prime"))
+            if f5_end_1base >= f5_start_1base:  # guard against TSS at chr start
+                records.append((chrom, f5_start_1base - 1, f5_end_1base, "promoter_5prime"))
         else:
-            # Negative Strand: TSS is max_end. Flank is upstream (coordinates > max_end)
-            # Region: [max_end + 1, max_end + flank]
+            # (-) strand: TSS is max_end. Upstream = higher coordinates.
+            # 1-based region: [max_end + 1, max_end + flank]
             f5_start_1base = max_end + 1
             f5_end_1base = max_end + flank_5_prime
-            # BED: start 0-based is start_1base - 1.
             records.append((chrom, f5_start_1base - 1, f5_end_1base, "promoter_5prime"))
 
-    # 3' Flank (Downstream)
+    # 3' Flank (Downstream — past TES)
     if flank_3_prime > 0:
         if strand == 1:
-            # Positive Strand: TES is max_end. Flank is downstream (> max_end)
+            # (+) strand: TES is max_end. Downstream = higher coordinates.
+            # 1-based region: [max_end + 1, max_end + flank]
             f3_start_1base = max_end + 1
             f3_end_1base = max_end + flank_3_prime
             records.append((chrom, f3_start_1base - 1, f3_end_1base, "downstream_3prime"))
         else:
-            # Negative Strand: TES is min_start. Flank is downstream (< min_start)
+            # (-) strand: TES is min_start. Downstream = lower coordinates.
+            # 1-based region: [min_start - flank, min_start - 1]
             f3_start_1base = max(1, min_start - flank_3_prime)
             f3_end_1base = min_start - 1
-            if f3_end_1base >= f3_start_1base:
+            if f3_end_1base >= f3_start_1base:  # guard against TES at chr start
                 records.append((chrom, f3_start_1base - 1, f3_end_1base, "downstream_3prime"))
     
     # Numbering Logic
@@ -438,11 +437,10 @@ def generate_bed_records(transcript_info, include_5utr=False, include_3utr=False
         # Split logic into 5'UTR, CDS, 3'UTR parts
         # 1. Identify UTR content
         
-        # If no CDS defined (non-coding), treat whole exon as 'exon' (or maybe distinct type?)
-        # User implies clinically relevant -> Coding. Assuming coding transcript.
-        if not cds_start:
-             final_regions.append((start - 1, end, region_base_name)) # Just generic exon
-             continue
+        # If no CDS defined (non-coding), treat whole exon as a generic exon record.
+        if cds_start is None:
+            final_regions.append((start - 1, end, region_base_name))
+            continue
 
         # Split Exon into potentially 3 parts: [Start, CDS_Start-1], [CDS_Start, CDS_End], [CDS_End+1, End]
         
@@ -503,20 +501,22 @@ def generate_bed_records(transcript_info, include_5utr=False, include_3utr=False
                     final_regions.append((u_start - 1, end, f"{region_base_name}_{type_}"))
 
     # Introns
+    # Ensembl coords are 1-based inclusive.
+    # Intron spans from (exon_i_end + 1) to (next_exon_start - 1), both 1-based inclusive.
+    # BED 0-based half-open: start = exon_i_end (= 1-based intron start - 1),
+    #                         end   = next_exon_start - 1 (= 1-based last intron base, BED end is exclusive so this is correct).
     if include_intron:
         for i in range(len(exons) - 1):
-             intron_start = exons[i]['end'] 
-             intron_end = exons[i+1]['start'] - 1 
-             
-             if strand == 1:
-                 intron_num = i + 1
-             else:
-                 intron_num = total_exons - i - 1
-             
-             b_start = intron_start
-             b_end = intron_end
-             if b_end > b_start:
-                 records.append((chrom, b_start, b_end, f'intron{intron_num}'))
+            bed_intron_start = exons[i]['end']          # 0-based: first intronic position
+            bed_intron_end = exons[i+1]['start'] - 1    # 0-based exclusive: one past last intronic position
+
+            if strand == 1:
+                intron_num = i + 1
+            else:
+                intron_num = total_exons - i - 1
+
+            if bed_intron_end > bed_intron_start:
+                records.append((chrom, bed_intron_start, bed_intron_end, f'intron{intron_num}'))
                  
     # Add final regions
     for s, e, type_ in final_regions:
