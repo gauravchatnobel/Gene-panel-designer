@@ -4,3 +4,10 @@ enableCORS = false
 
 [browser]
 gatherUsageStats = false
+
+[theme]
+primaryColor = "#00c9a7"
+backgroundColor = "#0f1923"
+secondaryBackgroundColor = "#162032"
+textColor = "#e8edf2"
+font = "sans serif"

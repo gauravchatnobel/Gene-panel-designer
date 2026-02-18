@@ -5,11 +5,106 @@ import liftover_utils
 import io
 import re
 
-st.set_page_config(page_title="Gene Panel Designer", layout="wide")
+st.set_page_config(
+    page_title="Gene Panel Designer",
+    page_icon="🧬",
+    layout="wide",
+)
 
-st.title("Gene Panel Designer")
+# ── Global CSS injected once ──────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* Step cards */
+.step-card {
+    background: #162032;
+    border: 1px solid #1f3050;
+    border-radius: 10px;
+    padding: 18px 20px;
+    text-align: center;
+    height: 100%;
+}
+.step-number {
+    display: inline-block;
+    background: #00c9a7;
+    color: #0f1923;
+    font-weight: 700;
+    font-size: 0.85rem;
+    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+    line-height: 28px;
+    margin-bottom: 8px;
+}
+.step-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #e8edf2;
+    margin: 4px 0 2px 0;
+}
+.step-desc {
+    font-size: 0.78rem;
+    color: #8fa3b8;
+}
+/* Info card (liftover) */
+.info-card {
+    background: #162032;
+    border-left: 4px solid #00c9a7;
+    border-radius: 6px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+    color: #b0c4d8;
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+/* Prominent download area */
+.download-summary {
+    background: #0d2b22;
+    border: 1px solid #00c9a7;
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin-top: 12px;
+    text-align: center;
+}
+.download-summary h3 {
+    color: #00c9a7;
+    margin: 0 0 4px 0;
+    font-size: 1.15rem;
+}
+.download-summary p {
+    color: #8fa3b8;
+    font-size: 0.85rem;
+    margin: 0 0 14px 0;
+}
+/* Subtle tag badges */
+.badge {
+    display: inline-block;
+    background: #1f3050;
+    color: #00c9a7;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-right: 4px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# Load MANE Data
+# ── Hero header ───────────────────────────────────────────────────────────────
+st.markdown("""
+<div style="padding: 10px 0 6px 0;">
+    <span style="font-size:2.1rem; font-weight:700; color:#e8edf2; letter-spacing:-0.5px;">
+        🧬 Gene Panel Designer
+    </span><br/>
+    <span style="font-size:1rem; color:#8fa3b8; line-height:1.8;">
+        Design and export clinical capture panels —
+        <span style="color:#00c9a7; font-weight:600;">from gene list to ready-to-order BED file</span>
+        in minutes.
+    </span>
+</div>
+""", unsafe_allow_html=True)
+st.divider()
+
+# ── Load MANE Data ────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
     return mane_utils.load_mane_data()
@@ -17,325 +112,447 @@ def load_data():
 mane_df = load_data()
 
 if mane_df is None:
-    st.error("MANE Summary file not found! Please ensure 'MANE.summary.txt' is in the application directory.")
+    st.error("MANE Summary file not found. Please ensure 'MANE.summary.txt' is in the application directory.")
     st.stop()
 
-tab1, tab2 = st.tabs(["Panel Designer", "LiftOver Tool (hg19 -> hg38)"])
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab1, tab2 = st.tabs(["🧬  Panel Designer", "🔄  LiftOver (hg19 → hg38)"])
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — PANEL DESIGNER
+# ═══════════════════════════════════════════════════════════════════════════════
 with tab1:
-    st.markdown("""
-    ### Identify clinically relevant MANE Select transcripts.
-    1. Upload gene list.
-    2. Review mapping and toggle gene-specific settings (**UTRs**, **Introns**).
-    3. Generate BED file.
-    """)
 
-    # Initial Sidebar Config (Defaults)
-    st.sidebar.header("Panel Settings (Defaults)")
-    genome_build = st.sidebar.radio("Genome Build", ["hg19", "hg38"], index=1)
-    
-    # ID Format Selection
-    id_format = st.sidebar.radio(
-        "Output Transcript ID Format",
-        ["Ensembl (ENST)", "RefSeq (NM)"],
-        help="Choose the identifier used in the BED file name column."
+    # ── Sidebar ───────────────────────────────────────────────────────────────
+    st.sidebar.markdown("""
+    <div style="padding:4px 0 10px 0;">
+        <span style="font-size:1.1rem; font-weight:700; color:#00c9a7;">⚙️ Panel Settings</span><br/>
+        <span style="font-size:0.78rem; color:#8fa3b8;">
+            Configure defaults here.<br/>Per-gene overrides are set in the table below.
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    genome_build = st.sidebar.radio(
+        "Genome Build",
+        ["hg19", "hg38"],
+        index=1,
+        help="Reference genome for BED coordinate output."
     )
-    
-    st.sidebar.subheader("Transcript Content")
-    default_5utr = st.sidebar.checkbox("Include 5' UTR (Default)", value=False, help="Can be customized per gene.")
-    default_3utr = st.sidebar.checkbox("Include 3' UTR (Default)", value=False, help="Can be customized per gene.")
-    default_intron = st.sidebar.checkbox("Include Introns (Default)", value=False, help="Can be customized per gene.")
-    padding = st.sidebar.number_input("Padding (bp)", min_value=0, value=20, help="Recommended: 20bp for clinical panels.")
-    
-    # Removed sidebar flank inputs here in favor of gene-specific table settings
 
-    uploaded_file = st.file_uploader("Upload Gene List", type=["csv", "xlsx", "txt"], key="designer_upload")
+    st.sidebar.divider()
+
+    id_format = st.sidebar.radio(
+        "Transcript ID Format",
+        ["Ensembl (ENST)", "RefSeq (NM)"],
+        help="Identifier used in the BED name column. RefSeq falls back to Ensembl when unavailable."
+    )
+
+    st.sidebar.divider()
+
+    st.sidebar.markdown(
+        "<span style='font-size:0.82rem; font-weight:600; color:#b0c4d8;'>TRANSCRIPT CONTENT</span>",
+        unsafe_allow_html=True
+    )
+    default_5utr   = st.sidebar.checkbox("Include 5′ UTR", value=False, help="Can be toggled per gene in the table.")
+    default_3utr   = st.sidebar.checkbox("Include 3′ UTR", value=False, help="Can be toggled per gene in the table.")
+    default_intron = st.sidebar.checkbox("Include Introns", value=False, help="Can be toggled per gene in the table.")
+
+    st.sidebar.divider()
+
+    padding = st.sidebar.number_input(
+        "Padding (bp)",
+        min_value=0,
+        value=20,
+        help="Bases added to each side of every region. 20 bp is standard for clinical panels."
+    )
+
+    # ── Step banner ───────────────────────────────────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("""
+        <div class="step-card">
+            <div class="step-number">1</div>
+            <div class="step-title">Upload Gene List</div>
+            <div class="step-desc">CSV, XLSX or plain TXT — one gene symbol per row</div>
+        </div>""", unsafe_allow_html=True)
+    with c2:
+        st.markdown("""
+        <div class="step-card">
+            <div class="step-number">2</div>
+            <div class="step-title">Review & Customise</div>
+            <div class="step-desc">Verify MANE transcripts · toggle UTRs, introns, promoter flanks per gene</div>
+        </div>""", unsafe_allow_html=True)
+    with c3:
+        st.markdown("""
+        <div class="step-card">
+            <div class="step-number">3</div>
+            <div class="step-title">Generate &amp; Download</div>
+            <div class="step-desc">Export a padded, strand-aware BED file ready to submit to your capture vendor</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
+
+    # ── File upload ───────────────────────────────────────────────────────────
+    uploaded_file = st.file_uploader(
+        "Upload your gene list",
+        type=["csv", "xlsx", "txt"],
+        key="designer_upload",
+        help="One gene symbol per row. Aliases in parentheses (e.g. CD274 (PD-L1)) are stripped automatically."
+    )
 
     if uploaded_file:
-        # Parse file function...
+        # ── Parse ─────────────────────────────────────────────────────────────
         genes = []
         try:
             if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file, header=None)
-                genes = df[0].astype(str).tolist()
+                df_raw = pd.read_csv(uploaded_file, header=None)
+                genes = df_raw[0].astype(str).tolist()
             elif uploaded_file.name.endswith('.xlsx'):
-                df = pd.read_excel(uploaded_file, header=None)
-                genes = df[0].astype(str).tolist()
-            else: # txt
+                df_raw = pd.read_excel(uploaded_file, header=None)
+                genes = df_raw[0].astype(str).tolist()
+            else:
                 content = uploaded_file.read().decode()
                 genes = [line.strip() for line in content.splitlines() if line.strip()]
-            
-            # Clean genes: remove parentheses and extra whitespace
-            # e.g. "CD274 (PD-L1)" -> "CD274"
-            cleaned_genes = []
+
+            # Clean: strip aliases in parentheses e.g. "CD274 (PD-L1)" → "CD274"
+            cleaned = []
             for g in genes:
-                # Remove content in parens
-                g_clean = re.sub(r'\(.*?\)', '', g)
-                # Strip whitespace
-                g_clean = g_clean.strip()
+                g_clean = re.sub(r'\(.*?\)', '', g).strip()
                 if g_clean:
-                    cleaned_genes.append(g_clean)
-            genes = cleaned_genes
+                    cleaned.append(g_clean)
+            genes = cleaned
         except Exception as e:
-            st.error(f"Error parsing file: {e}")
+            st.error(f"Could not parse file: {e}")
             st.stop()
-            
-        st.success(f"Loaded {len(genes)} genes. Processing...")
-        
-        # 1. Map to MANE
-        # Use a content hash (not just filename) so re-uploading a same-named but different file
-        # correctly triggers reprocessing.
+
+        st.success(f"✅ {len(genes)} gene symbols loaded.")
+
+        # ── Map to MANE (cached by file content hash) ─────────────────────────
         file_hash = hash(uploaded_file.getvalue())
         if 'mapped_data' not in st.session_state or st.session_state.get('last_file_hash') != file_hash:
-             mapped_df = mane_utils.get_mane_transcripts(genes, mane_df)
-             
-             # Fallback for missing genes
-             found_symbols = set(mapped_df['symbol'].str.upper())
-             input_symbols = set(g.upper() for g in genes)
-             missing_genes = input_symbols - found_symbols
-             
-             if missing_genes:
-                 status_text = st.warning(f"Fetching Ensembl Canonical transcripts for {len(missing_genes)} non-MANE genes...")
-                 fallback_df = mane_utils.get_ensembl_canonical(missing_genes, build=genome_build)
-                 if not fallback_df.empty:
-                     mapped_df = pd.concat([mapped_df, fallback_df], ignore_index=True)
-                     status_text.empty() # Clear warning
-                     
-                     # Check for Aliases in Fallback Data
-                     if 'original_input' in fallback_df.columns:
-                         aliases = fallback_df[fallback_df['original_input'].str.upper() != fallback_df['symbol'].str.upper()]
-                         if not aliases.empty:
-                             with st.expander(f"ℹ️ {len(aliases)} Gene Aliases Recognized", expanded=True):
-                                 st.info(f"The following genes were mapped to their official symbols for {genome_build}:")
-                                 st.table(aliases[['original_input', 'symbol']].rename(columns={'original_input': 'Input Symbol', 'symbol': 'Official Symbol'}))
-             
-             # Fetch GC Content (Batch)
-             status_text = st.warning(f"Calculating GC Content for {len(mapped_df)} transcripts...")
-             transcript_ids = mapped_df['Ensembl_nuc'].tolist()
-             # GC content always fetched from hg38 because MANE Select transcript IDs (ENST) are
-             # defined on GRCh38. Ensembl Canonical fallback IDs may silently return None GC for
-             # hg19-only transcripts — this is acceptable since GC is for informational display only.
-             gc_map = mane_utils.fetch_transcript_gc_batch(transcript_ids, build='hg38')
-             
-             mapped_df['Mean GC %'] = mapped_df['Ensembl_nuc'].map(gc_map)
-             status_text.empty()
 
-             # Add Config Columns
-             mapped_df['Include 5\' UTR'] = default_5utr
-             mapped_df['Include 3\' UTR'] = default_3utr
-             mapped_df['Include Intron'] = default_intron
-             
-             # NEW: Gene-specific flanks
-             # Default to 0, but user can edit per gene
-             mapped_df['5\' Flank'] = 0
-             mapped_df['3\' Flank'] = 0
-             
-             st.session_state['mapped_data'] = mapped_df
-             st.session_state['last_file_hash'] = file_hash
-        
-        # Report on Transcript Selection (User Request)
-        non_mane_select = st.session_state['mapped_data'][
-            st.session_state['mapped_data']['MANE_status'] != 'MANE Select'
-        ]
-        
-        if not non_mane_select.empty:
-            with st.expander(f"⚠️ {len(non_mane_select)} Genes used non-MANE Select transcripts", expanded=True):
-                st.write("The following genes did not have a MANE Select transcript found. Alternate transcripts were chosen:")
-                # Format for display
-                display_warn = non_mane_select[['symbol', 'Ensembl_nuc', 'MANE_status']].rename(
-                    columns={'symbol': 'Gene', 'Ensembl_nuc': 'Transcript ID', 'MANE_status': 'Reason / Source'}
+            mapped_df = mane_utils.get_mane_transcripts(genes, mane_df)
+
+            # Fallback: Ensembl Canonical for genes absent from MANE
+            found_symbols  = set(mapped_df['symbol'].str.upper())
+            input_symbols  = set(g.upper() for g in genes)
+            missing_genes  = input_symbols - found_symbols
+
+            if missing_genes:
+                status_ph = st.info(f"⏳ Fetching Ensembl Canonical for {len(missing_genes)} non-MANE gene(s)…")
+                fallback_df = mane_utils.get_ensembl_canonical(missing_genes, build=genome_build)
+                if not fallback_df.empty:
+                    mapped_df = pd.concat([mapped_df, fallback_df], ignore_index=True)
+                    status_ph.empty()
+
+                    if 'original_input' in fallback_df.columns:
+                        aliases = fallback_df[
+                            fallback_df['original_input'].str.upper() != fallback_df['symbol'].str.upper()
+                        ]
+                        if not aliases.empty:
+                            with st.expander(f"ℹ️ {len(aliases)} gene alias(es) resolved", expanded=True):
+                                st.table(
+                                    aliases[['original_input', 'symbol']].rename(
+                                        columns={'original_input': 'Input', 'symbol': 'Official Symbol'}
+                                    )
+                                )
+
+            # GC content (always hg38 — MANE IDs are GRCh38-defined; hg19 fallback may return None)
+            gc_ph = st.info("⏳ Calculating GC content…")
+            gc_map = mane_utils.fetch_transcript_gc_batch(mapped_df['Ensembl_nuc'].tolist(), build='hg38')
+            mapped_df['Mean GC %'] = mapped_df['Ensembl_nuc'].map(gc_map)
+            gc_ph.empty()
+
+            # Config columns
+            mapped_df["Include 5' UTR"]  = default_5utr
+            mapped_df["Include 3' UTR"]  = default_3utr
+            mapped_df["Include Intron"]  = default_intron
+            mapped_df["5' Flank"]        = 0
+            mapped_df["3' Flank"]        = 0
+
+            st.session_state['mapped_data']   = mapped_df
+            st.session_state['last_file_hash'] = file_hash
+
+        mapped_df = st.session_state['mapped_data']
+
+        # ── Summary metric cards ───────────────────────────────────────────────
+        n_total      = len(mapped_df)
+        n_mane_sel   = (mapped_df['MANE_status'] == 'MANE Select').sum()
+        n_other      = n_total - n_mane_sel
+        n_not_found  = len(set(g.upper() for g in genes) - set(mapped_df['symbol'].str.upper()))
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Genes submitted",   len(genes))
+        mc2.metric("Mapped",            n_total)
+        mc3.metric("MANE Select",       int(n_mane_sel))
+        mc4.metric("Non-MANE / Alt",    int(n_other),
+                   delta=f"{n_not_found} not found" if n_not_found else None,
+                   delta_color="inverse" if n_not_found else "off")
+
+        # ── Non-MANE transcript warning ────────────────────────────────────────
+        non_mane = mapped_df[mapped_df['MANE_status'] != 'MANE Select']
+        if not non_mane.empty:
+            with st.expander(f"⚠️ {len(non_mane)} gene(s) using non-MANE Select transcripts", expanded=False):
+                st.caption("These genes did not have a MANE Select transcript. An alternative was chosen automatically.")
+                st.table(
+                    non_mane[['symbol', 'Ensembl_nuc', 'MANE_status']].rename(
+                        columns={'symbol': 'Gene', 'Ensembl_nuc': 'Transcript ID', 'MANE_status': 'Source'}
+                    )
                 )
-                st.table(display_warn)
         else:
-            if genome_build == 'hg19':
-                st.info("✅ All genes mapped to MANE Select. (Note: Runtime switches to hg19 Canonical may occur during generation if MANE versions are incompatible).")
-            else:
-                st.success("✅ All mapped genes are using MANE Select transcripts.")
-        
-        # Interactive Editor
-        st.subheader("Customize Gene Settings")
-        st.info("Tip: Set specific Promoter (5' Flank) regions here. (e.g. 2000 for MYC/BCL2, 500 for TERT/IG).")
-        
+            msg = ("✅ All genes mapped to MANE Select transcripts."
+                   if genome_build == 'hg38'
+                   else "✅ All genes mapped to MANE Select. (hg19 runtime switches may occur during BED generation.)")
+            st.success(msg)
+
+        st.divider()
+
+        # ── Per-gene settings table ────────────────────────────────────────────
+        st.markdown("### ⚙️ Customise Per-Gene Settings")
+        st.caption("Edit UTR/intron toggles and promoter/downstream flanks per gene. All other columns are read-only.")
+
         edited_df = st.data_editor(
-            st.session_state['mapped_data'],
+            mapped_df,
             column_config={
-                "Include 5' UTR": st.column_config.CheckboxColumn("5' UTR", help="Toggle 5' UTR inclusion"),
-                "Include 3' UTR": st.column_config.CheckboxColumn("3' UTR", help="Toggle 3' UTR inclusion"),
-                "Include Intron": st.column_config.CheckboxColumn("Introns", help="Toggle Intron inclusion"),
-                "5' Flank": st.column_config.NumberColumn("5' Flank (bp)", help="Upstream Promoter region", min_value=0),
-                "3' Flank": st.column_config.NumberColumn("3' Flank (bp)", help="Downstream region", min_value=0),
-                "Mean GC %": st.column_config.NumberColumn(
-                    "GC %",
-                    help="Mean GC content of the transcript (cDNA)",
-                    format="%.1f%%",
-                    min_value=0,
-                    max_value=100
-                ),
-                "symbol": st.column_config.TextColumn("Gene", disabled=True),
-                "Ensembl_nuc": st.column_config.TextColumn("Transcript", disabled=True),
-                "MANE_status": st.column_config.TextColumn("Type", disabled=True),
-                "GRCh38_chr": None, # Hide this column
+                "symbol":         st.column_config.TextColumn("Gene",        disabled=True),
+                "Ensembl_nuc":    st.column_config.TextColumn("Transcript",  disabled=True),
+                "RefSeq_nuc":     st.column_config.TextColumn("RefSeq ID",   disabled=True),
+                "MANE_status":    st.column_config.TextColumn("Type",        disabled=True),
+                "Ensembl_Gene":   st.column_config.TextColumn("Gene ID",     disabled=True),
+                "GRCh38_chr":     None,  # hidden
+                "Mean GC %":      st.column_config.NumberColumn(
+                                      "GC %",
+                                      format="%.1f%%",
+                                      min_value=0, max_value=100,
+                                      help="Mean GC content of the cDNA sequence (informational).",
+                                      disabled=True
+                                  ),
+                "Include 5' UTR": st.column_config.CheckboxColumn("5′ UTR",   help="Include 5′ UTR regions"),
+                "Include 3' UTR": st.column_config.CheckboxColumn("3′ UTR",   help="Include 3′ UTR regions"),
+                "Include Intron": st.column_config.CheckboxColumn("Introns",  help="Include intronic regions"),
+                "5' Flank":       st.column_config.NumberColumn(
+                                      "5′ Flank (bp)",
+                                      help="Upstream promoter padding added upstream of TSS (e.g. 2000 for MYC).",
+                                      min_value=0
+                                  ),
+                "3' Flank":       st.column_config.NumberColumn(
+                                      "3′ Flank (bp)",
+                                      help="Downstream padding added past the transcript end.",
+                                      min_value=0
+                                  ),
             },
             disabled=["symbol", "Ensembl_nuc", "RefSeq_nuc", "MANE_status", "Ensembl_Gene", "Mean GC %"],
             hide_index=True,
-            use_container_width=True
+            use_container_width=True,
         )
-        
-        missing = set(g.upper() for g in genes) - set(edited_df['symbol'].str.upper())
-        if missing:
-            st.warning(f"Genes not found in MANE: {', '.join(missing)}")
-            
-        # Process Code
-        if st.button("Generate Final BED"):
-            st.sidebar.markdown(f"**Selected:** {genome_build}")
+
+        # Warn about genes that could not be mapped at all
+        still_missing = set(g.upper() for g in genes) - set(edited_df['symbol'].str.upper())
+        if still_missing:
+            st.warning(f"⚠️ Could not find transcripts for: **{', '.join(sorted(still_missing))}**")
+
+        st.divider()
+
+        # ── Generate button ────────────────────────────────────────────────────
+        _, btn_col, _ = st.columns([2, 1, 2])
+        with btn_col:
+            generate = st.button("⚡ Generate BED File", use_container_width=True, type="primary")
+
+        if generate:
+            st.sidebar.markdown(f"**Active build:** `{genome_build}`")
             progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            bed_lines = []
-            total = len(edited_df)
-            no_cds_genes = []
+            status_ph    = st.empty()
+
+            bed_lines     = []
+            total         = len(edited_df)
+            no_cds_genes  = []
             fallback_genes = []
-            refseq_issues = [] # Track genes that reverted to ENST in RefSeq mode
-            
+            refseq_issues  = []
+
             for i, (index, row) in enumerate(edited_df.iterrows()):
-                progress_value = (i + 1) / total
-                count_progress = min(progress_value, 1.0)
-                progress_bar.progress(count_progress)
-                
-                gene = row['symbol']
-                enst_requested = row['Ensembl_nuc']
-                nm_requested = row.get('RefSeq_nuc') # Might be NaN
-                
-                use_5utr = row["Include 5' UTR"]
-                use_3utr = row["Include 3' UTR"]
-                use_intron = row.get('Include Intron', False)
-                # Read flanks from row
-                flank_5_prime = row.get("5' Flank", 0)
-                flank_3_prime = row.get("3' Flank", 0)
-                
-                status_text.text(f"Fetching {gene} ({enst_requested})...")
-                
-                # Pass gene_symbol to enable fallback lookup on specific build if ID fails
-                transcript_info = mane_utils.fetch_ensembl_exons(enst_requested, build=genome_build, gene_symbol=gene)
-                
+                progress_bar.progress((i + 1) / total)
+
+                gene          = row['symbol']
+                enst_req      = row['Ensembl_nuc']
+                nm_req        = row.get('RefSeq_nuc')
+
+                use_5utr      = row["Include 5' UTR"]
+                use_3utr      = row["Include 3' UTR"]
+                use_intron    = row.get('Include Intron', False)
+                flank_5prime  = int(row.get("5' Flank", 0) or 0)
+                flank_3prime  = int(row.get("3' Flank", 0) or 0)
+
+                status_ph.caption(f"⏳ Fetching {gene}  ({enst_req})…")
+
+                transcript_info = mane_utils.fetch_ensembl_exons(enst_req, build=genome_build, gene_symbol=gene)
+
                 if transcript_info:
                     fetched_id = transcript_info['transcript_id']
-                    
-                    # Check for Switch
-                    is_switched = False
-                    if fetched_id.split('.')[0] != enst_requested.split('.')[0]:
+
+                    # Detect transcript switch (hg19 fallback)
+                    is_switched = fetched_id.split('.')[0] != enst_req.split('.')[0]
+                    if is_switched:
                         fallback_genes.append({
                             'Gene': gene,
-                            'Original (MANE)': enst_requested,
-                            'Used (hg19)': fetched_id
+                            'Requested (MANE)': enst_req,
+                            'Used (hg19 canonical)': fetched_id,
                         })
-                        is_switched = True
-                    
-                    # Determine Output ID Label
-                    output_label = fetched_id # Default to Ensembl
-                    
-                    if "RefSeq" in id_format:
-                        # Logic: Use RefSeq ONLY if:
-                        # 1. No runtime switch (because original NM matches original ENST)
-                        # 2. We actually have an NM ID
-                        
-                        if is_switched:
-                            refseq_issues.append({'Gene': gene, 'Reason': 'Transcript Switched (hg19)'})
-                        elif pd.isna(nm_requested) or not str(nm_requested).startswith("NM"):
-                             refseq_issues.append({'Gene': gene, 'Reason': 'No RefSeq ID available'})
-                        else:
-                             output_label = nm_requested
 
-                    # Check for CDS presence (use `is None` to avoid false positive when cds_start == 0)
+                    # Determine output ID label
+                    output_label = fetched_id
+                    if "RefSeq" in id_format:
+                        if is_switched:
+                            refseq_issues.append({'Gene': gene, 'Reason': 'Transcript switched (hg19)'})
+                        elif pd.isna(nm_req) or not str(nm_req).startswith("NM"):
+                            refseq_issues.append({'Gene': gene, 'Reason': 'No RefSeq ID available'})
+                        else:
+                            output_label = nm_req
+
+                    # CDS presence check (is None — avoid false positive at coord 0)
                     if transcript_info.get('cds_start') is None:
                         no_cds_genes.append(gene)
-                        
+
                     records = mane_utils.generate_bed_records(
-                        transcript_info, 
-                        include_5utr=use_5utr, 
-                        include_3utr=use_3utr, 
+                        transcript_info,
+                        include_5utr=use_5utr,
+                        include_3utr=use_3utr,
                         include_intron=use_intron,
-                        flank_5_prime=flank_5_prime,
-                        flank_3_prime=flank_3_prime
+                        flank_5_prime=flank_5prime,
+                        flank_3_prime=flank_3prime,
                     )
-                    
+
                     for chrom, start, end, type_ in records:
                         p_start = max(0, start - padding)
-                        p_end = end + padding
-                        
-                        # Extract Exon Number for extra column
-                        # type_ is usually 'exon7', 'exon7_CDS', 'intron1', '5UTR' (if not attached to exon?) 
-                        # actually mane_utils usually outputs 'exonX_...'
-                        exon_match = re.search(r'(?:exon|intron)(\d+)', type_)
-                        exon_num = exon_match.group(1) if exon_match else "."
-                        
+                        p_end   = end + padding
+
+                        # Column 8: exon/intron number (. for non-numbered regions)
+                        m = re.search(r'(?:exon|intron)(\d+)', type_)
+                        exon_num = m.group(1) if m else "."
+
                         full_name = f"{gene}_{output_label}_{type_}"
-                        
-                        # BED6 + 2 (Gene, Exon)
-                        # Standard BED has 6 columns. We append Gene and Exon as 7 and 8.
-                        bed_lines.append(f"{chrom}\t{p_start}\t{p_end}\t{full_name}\t.\t{transcript_info['strand']}\t{gene}\t{exon_num}")
+                        bed_lines.append(
+                            f"{chrom}\t{p_start}\t{p_end}\t{full_name}\t.\t{transcript_info['strand']}\t{gene}\t{exon_num}"
+                        )
                 else:
-                    st.error(f"Failed to fetch: {gene}")
-               
-            # ---------------------------
-            # Final Generation Report
-            # ---------------------------
-            st.divider()
-            st.subheader("Generation Report")
-            
-            # 1. Transcript Switches (hg19)
-            if fallback_genes:
-                with st.expander(f"⚠️ {len(fallback_genes)} Transcripts Changed (hg19 Fallback)", expanded=True):
-                    st.warning(f"The original MANE Select transcript could not be found on {genome_build}. The system fell back to the canonical transcript for this build:")
-                    st.table(pd.DataFrame(fallback_genes))
-            else:
-                 st.success(f"✅ No transcript switches occurred. All genes used the intended MANE Select transcript ID on {genome_build}.")
+                    st.error(f"❌ Failed to fetch transcript for **{gene}**")
 
-            # 2. RefSeq ID Status (if selected)
-            if "RefSeq" in id_format:
-                if refseq_issues:
-                     with st.expander(f"⚠️ {len(refseq_issues)} Genes Reverted to Ensembl ID", expanded=True):
-                        st.warning("The following genes did not have a valid RefSeq match suitable for output (or were switched at runtime), so we used the Ensembl ID (ENST) instead:")
-                        st.table(pd.DataFrame(refseq_issues))
+            progress_bar.empty()
+            status_ph.empty()
+
+            # ── Generation Report ──────────────────────────────────────────────
+            st.markdown("### 📋 Generation Report")
+
+            rep1, rep2, rep3 = st.columns(3)
+            with rep1:
+                if fallback_genes:
+                    with st.expander(f"⚠️ {len(fallback_genes)} transcript switch(es)", expanded=True):
+                        st.caption(f"MANE Select IDs not available on {genome_build}; canonical transcript used instead.")
+                        st.table(pd.DataFrame(fallback_genes))
                 else:
-                     st.success("✅ All regions labeled with RefSeq (NM) IDs.")
+                    st.success(f"✅ No transcript switches on {genome_build}.")
 
-            # 3. CDS Status
-            if no_cds_genes:
-                st.warning(f"⚠️ No Coding Sequence (CDS) data found for the following genes on {genome_build}: {', '.join(no_cds_genes)}.\n\nFull exons were included without '_CDS' labels.")
-            else:
-                st.success(f"✅ Coding Sequence (CDS) data found for all transcripts.")
-                    
+            with rep2:
+                if "RefSeq" in id_format:
+                    if refseq_issues:
+                        with st.expander(f"⚠️ {len(refseq_issues)} gene(s) reverted to Ensembl ID", expanded=True):
+                            st.caption("No valid RefSeq (NM) ID available; Ensembl ID used instead.")
+                            st.table(pd.DataFrame(refseq_issues))
+                    else:
+                        st.success("✅ All regions labelled with RefSeq IDs.")
+                else:
+                    st.info("Ensembl IDs used (RefSeq mode off).")
+
+            with rep3:
+                if no_cds_genes:
+                    st.warning(f"⚠️ No CDS data for: {', '.join(no_cds_genes)}\n\nFull exons included without CDS labels.")
+                else:
+                    st.success("✅ CDS data found for all transcripts.")
+
+            # ── Download block ─────────────────────────────────────────────────
             if not bed_lines:
-                status_text.error("No BED records were generated. All gene lookups may have failed.")
+                st.error("No BED records were generated. All gene lookups may have failed — check errors above.")
             else:
-                status_text.success(f"Generation Complete! {len(bed_lines)} records generated.")
+                bed_content = "\n".join(bed_lines)
+                n_genes_out = edited_df['symbol'].nunique()
+
+                st.markdown(f"""
+                <div class="download-summary">
+                    <h3>✅ Panel ready</h3>
+                    <p>{len(bed_lines):,} regions across {n_genes_out} gene(s) · build {genome_build} · {padding} bp padding</p>
+                </div>
+                """, unsafe_allow_html=True)
+
                 st.download_button(
-                    "Download BED",
-                    "\n".join(bed_lines),
+                    label="⬇️  Download BED File",
+                    data=bed_content,
                     file_name=f"panel_{genome_build}.bed",
-                    mime="text/plain"
+                    mime="text/plain",
+                    use_container_width=True,
+                    type="primary",
                 )
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — LIFTOVER
+# ═══════════════════════════════════════════════════════════════════════════════
 with tab2:
-    st.header("LiftOver Assistant (hg19 -> hg38)")
-    st.markdown("Convert an existing BED file from hg19 (GRCh37) to hg38 (GRCh38) coordinates.")
-    
-    lift_file = st.file_uploader("Upload hg19 BED File", type=["bed", "txt"], key="lift_upload")
-    
+
+    st.markdown("""
+    <div class="info-card">
+        <strong style="color:#00c9a7;">🔄 Coordinate LiftOver — hg19 → hg38</strong><br/>
+        Convert an existing BED file from GRCh37 (hg19) to GRCh38 (hg38) coordinates using
+        UCSC chain files. Regions that cannot be mapped are collected separately so nothing
+        is silently dropped.
+    </div>
+    """, unsafe_allow_html=True)
+
+    lift_file = st.file_uploader(
+        "Upload hg19 BED file",
+        type=["bed", "txt"],
+        key="lift_upload",
+        help="Accepts tab-separated, comma-separated or space-separated BED files. Headers (track/browser/#) are preserved."
+    )
+
     if lift_file:
         content = lift_file.read().decode("utf-8")
-        if st.button("Convert to hg38"):
-            with st.spinner("Converting..."):
+        n_lines = sum(1 for l in content.splitlines() if l.strip() and not l.startswith(('#', 'track', 'browser')))
+        st.caption(f"📄 {lift_file.name} · {n_lines} data line(s) detected")
+
+        _, btn_col2, _ = st.columns([2, 1, 2])
+        with btn_col2:
+            convert = st.button("🔄 Convert to hg38", use_container_width=True, type="primary")
+
+        if convert:
+            with st.spinner("Converting coordinates…"):
                 converted, unmapped = liftover_utils.convert_bed_hg19_to_hg38(content)
-            
-            st.success("Conversion finished.")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("Download hg38 BED", converted, "hg38_converted.bed")
-            with col2:
+
+            n_converted = sum(1 for l in converted.splitlines() if l.strip() and not l.startswith(('#', 'track', 'browser')))
+            n_unmapped  = sum(1 for l in unmapped.splitlines() if l.strip())
+
+            m1, m2 = st.columns(2)
+            m1.metric("Regions converted", n_converted)
+            m2.metric("Regions unmapped",  n_unmapped, delta_color="inverse" if n_unmapped else "off")
+
+            st.divider()
+
+            dl1, dl2 = st.columns(2)
+            with dl1:
+                st.download_button(
+                    "⬇️  Download hg38 BED",
+                    data=converted,
+                    file_name="hg38_converted.bed",
+                    mime="text/plain",
+                    use_container_width=True,
+                    type="primary",
+                )
+            with dl2:
                 if unmapped.strip():
-                     st.download_button("Download Unmapped Lines", unmapped, "unmapped_lines.txt")
+                    st.download_button(
+                        "⬇️  Download Unmapped Regions",
+                        data=unmapped,
+                        file_name="unmapped_lines.txt",
+                        mime="text/plain",
+                        use_container_width=True,
+                    )
                 else:
-                     st.info("All regions mapped successfully.")
+                    st.success("✅ All regions mapped successfully — no unmapped lines.")
