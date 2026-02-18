@@ -5,6 +5,42 @@ import liftover_utils
 import io
 import re
 
+def parse_exon_filter(value):
+    """
+    Parse an exon filter string into a set of ints.
+    Returns:
+        None          — if value is blank / "all" (include everything)
+        set of ints   — the requested exon numbers (1-based)
+    Raises ValueError with a descriptive message on bad syntax.
+
+    Examples:
+        "all"   -> None
+        ""      -> None
+        "3"     -> {3}
+        "1,3,5" -> {1, 3, 5}
+        "1-3,7" -> {1, 2, 3, 7}
+    """
+    if not value or str(value).strip().lower() in ("all", ""):
+        return None
+    result = set()
+    for part in str(value).replace(" ", "").split(","):
+        if "-" in part:
+            bounds = part.split("-")
+            if len(bounds) != 2 or not all(b.isdigit() for b in bounds):
+                raise ValueError(f"Invalid range '{part}' — use format like '5-9'")
+            lo, hi = int(bounds[0]), int(bounds[1])
+            if lo > hi:
+                raise ValueError(f"Invalid range '{part}' — start must be ≤ end")
+            result.update(range(lo, hi + 1))
+        elif part.isdigit():
+            result.add(int(part))
+        else:
+            raise ValueError(f"Invalid token '{part}' — use integers, commas and ranges (e.g. '1,3,5-7')")
+    if not result:
+        raise ValueError("Exon filter is empty after parsing")
+    return result
+
+
 st.set_page_config(
     page_title="Gene Panel Designer",
     page_icon="🧬",
@@ -287,6 +323,7 @@ with tab1:
             mapped_df["Include Intron"]  = default_intron
             mapped_df["5' Flank"]        = 0
             mapped_df["3' Flank"]        = 0
+            mapped_df["Exon Filter"]     = "all"   # "all" or comma/range list e.g. "1,3,5-7"
 
             st.session_state['mapped_data']   = mapped_df
             st.session_state['last_file_hash'] = file_hash
@@ -327,7 +364,8 @@ with tab1:
 
         # ── Per-gene settings table ────────────────────────────────────────────
         st.markdown("### ⚙️ Customise Per-Gene Settings")
-        st.caption("Edit UTR/intron toggles and promoter/downstream flanks per gene. All other columns are read-only.")
+        st.caption("Edit UTR/intron toggles, promoter/downstream flanks, and exon filters per gene. "
+                   "Exon Filter: leave blank for all exons, or enter e.g. '2,3' or '19-21'. All other columns are read-only.")
 
         edited_df = st.data_editor(
             mapped_df,
@@ -360,6 +398,14 @@ with tab1:
                                       help="Downstream padding added past the transcript end.",
                                       min_value=0
                                   ),
+                "Exon Filter":    st.column_config.TextColumn(
+                                      "Exon Filter",
+                                      help=(
+                                          "Which exons to include. Leave blank or type 'all' for every exon. "
+                                          "Otherwise enter exon numbers (transcript order, 1-based): "
+                                          "e.g. '2,3' or '19-21' or '1,5-7,10'."
+                                      ),
+                                  ),
             },
             disabled=["symbol", "Ensembl_nuc", "RefSeq_nuc", "MANE_status", "Ensembl_Gene", "Mean GC %"],
             hide_index=True,
@@ -383,11 +429,12 @@ with tab1:
             progress_bar = st.progress(0)
             status_ph    = st.empty()
 
-            bed_lines     = []
-            total         = len(edited_df)
-            no_cds_genes  = []
+            bed_lines      = []
+            total          = len(edited_df)
+            no_cds_genes   = []
             fallback_genes = []
             refseq_issues  = []
+            exon_filter_errors = []   # {gene, requested, available}
 
             for i, (index, row) in enumerate(edited_df.iterrows()):
                 progress_bar.progress((i + 1) / total)
@@ -401,6 +448,14 @@ with tab1:
                 use_intron    = row.get('Include Intron', False)
                 flank_5prime  = int(row.get("5' Flank", 0) or 0)
                 flank_3prime  = int(row.get("3' Flank", 0) or 0)
+                exon_filter_raw = str(row.get("Exon Filter", "all") or "all").strip()
+
+                # Parse exon filter — report syntax errors immediately and skip gene
+                try:
+                    exon_filter_set = parse_exon_filter(exon_filter_raw)
+                except ValueError as e:
+                    st.error(f"❌ **{gene}** — invalid Exon Filter '{exon_filter_raw}': {e}")
+                    continue
 
                 status_ph.caption(f"⏳ Fetching {gene}  ({enst_req})…")
 
@@ -432,6 +487,24 @@ with tab1:
                     if transcript_info.get('cds_start') is None:
                         no_cds_genes.append(gene)
 
+                    # Validate exon filter against actual exon count
+                    n_exons = len(transcript_info.get('exons', []))
+                    if exon_filter_set:
+                        invalid_exons = sorted(e for e in exon_filter_set if e < 1 or e > n_exons)
+                        if invalid_exons:
+                            exon_filter_errors.append({
+                                'Gene': gene,
+                                'Requested': exon_filter_raw,
+                                'Invalid exon(s)': ', '.join(str(e) for e in invalid_exons),
+                                'Transcript exons': n_exons,
+                            })
+                            # Remove invalid numbers and continue with valid ones only
+                            exon_filter_set = exon_filter_set - set(invalid_exons)
+                            if not exon_filter_set:
+                                st.error(f"❌ **{gene}** — all requested exons are out of range "
+                                         f"(transcript has {n_exons} exon(s)). Gene skipped.")
+                                continue
+
                     records = mane_utils.generate_bed_records(
                         transcript_info,
                         include_5utr=use_5utr,
@@ -439,6 +512,7 @@ with tab1:
                         include_intron=use_intron,
                         flank_5_prime=flank_5prime,
                         flank_3_prime=flank_3prime,
+                        exon_filter=exon_filter_set,
                     )
 
                     for chrom, start, end, type_ in records:
@@ -487,6 +561,15 @@ with tab1:
                     st.warning(f"⚠️ No CDS data for: {', '.join(no_cds_genes)}\n\nFull exons included without CDS labels.")
                 else:
                     st.success("✅ CDS data found for all transcripts.")
+
+            # Exon filter validation report (full-width, below the 3-col block)
+            if exon_filter_errors:
+                with st.expander(f"⚠️ {len(exon_filter_errors)} gene(s) had out-of-range exon numbers", expanded=True):
+                    st.caption(
+                        "The exon numbers below do not exist in the selected transcript. "
+                        "Valid exons were still included; only the invalid numbers were skipped."
+                    )
+                    st.table(pd.DataFrame(exon_filter_errors))
 
             # ── Download block ─────────────────────────────────────────────────
             if not bed_lines:

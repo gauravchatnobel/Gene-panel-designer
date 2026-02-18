@@ -368,10 +368,13 @@ def fetch_ensembl_exons(transcript_id_version, build='hg38', gene_symbol=None):
         'strand': data['strand']
     }
 
-def generate_bed_records(transcript_info, include_5utr=False, include_3utr=False, include_intron=False, flank_5_prime=0, flank_3_prime=0):
+def generate_bed_records(transcript_info, include_5utr=False, include_3utr=False, include_intron=False, flank_5_prime=0, flank_3_prime=0, exon_filter=None):
     """
     Generate BED lines from transcript info.
     transcript_info: output from fetch_ensembl_exons
+    exon_filter: set of ints (1-based transcript-order exon numbers) to include.
+                 None or empty = include all exons.
+                 Flanks and introns between selected exons are always emitted regardless.
     """
     records = []
     chrom = transcript_info['chr']
@@ -441,7 +444,12 @@ def generate_bed_records(transcript_info, include_5utr=False, include_3utr=False
             exon_num = total_exons - i
             
         region_base_name = f"exon{exon_num}"
-        
+
+        # Exon filter: skip this exon if a filter is active and this number is not in it.
+        # Flanks are gene-level and are emitted unconditionally (handled above the loop).
+        if exon_filter and exon_num not in exon_filter:
+            continue
+
         # Split logic into 5'UTR, CDS, 3'UTR parts
         # 1. Identify UTR content
         
@@ -520,8 +528,16 @@ def generate_bed_records(transcript_info, include_5utr=False, include_3utr=False
 
             if strand == 1:
                 intron_num = i + 1
+                left_exon_num  = i + 1
+                right_exon_num = i + 2
             else:
                 intron_num = total_exons - i - 1
+                left_exon_num  = total_exons - i
+                right_exon_num = total_exons - i - 1
+
+            # Only emit this intron if both flanking exons are selected (or no filter active)
+            if exon_filter and not (left_exon_num in exon_filter and right_exon_num in exon_filter):
+                continue
 
             if bed_intron_end > bed_intron_start:
                 records.append((chrom, bed_intron_start, bed_intron_end, f'intron{intron_num}'))
